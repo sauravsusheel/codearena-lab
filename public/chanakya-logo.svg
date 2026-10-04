@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" fill="none">
+  <!-- Chanakya University Official Vector Logo -->
+  <g transform="translate(10, 10)">
+    <!-- Crest Shield Background -->
+    <path d="M40 0 C62 0, 80 18, 80 40 C80 62, 55 78, 40 80 C25 78, 0 62, 0 40 C0 18, 18 0, 40 0 Z" fill="url(#cu_navy_grad)" stroke="#d4af37" stroke-width="2.5" />
+    
+    <!-- Inner Golden Border -->
+    <path d="M40 5 C58 5, 74 20, 74 40 C74 58, 52 72, 40 75 C28 72, 6 58, 6 40 C6 20, 22 5, 40 5 Z" fill="none" stroke="#d4af37" stroke-width="1" stroke-dasharray="2 2" opacity="0.6"/>
+
+    <!-- Radiant Sun Rays / Wisdom Wheel -->
+    <circle cx="40" cy="38" r="16" fill="url(#cu_gold_grad)" />
+    <circle cx="40" cy="38" r="12" fill="#0a1e3b" />
+    
+    <!-- Central Monogram 'CU' -->
+    <text x="40" y="44" font-family="'Cinzel', 'Times New Roman', serif" font-weight="900" font-size="16" fill="#ffd700" text-anchor="middle" letter-spacing="-0.5">CU</text>
+    
+    <!-- Open Book / Foundation Base -->
+    <path d="M26 56 Q40 51 54 56 Q40 60 26 56 Z" fill="#d4af37"/>
+    <path d="M28 58 Q40 53 52 58" stroke="#0a1e3b" stroke-width="1.5" fill="none"/>
+  </g>
+
+  <!-- Typography: CHANAKYA UNIVERSITY -->
+  <text x="105" y="44" font-family="'Cinzel', 'Trajan Pro', 'Georgia', serif" font-weight="900" font-size="28" fill="#0a1e3b" letter-spacing="1.5">
+    CHANAKYA
+  </text>
+  <text x="105" y="68" font-family="'Montserrat', 'Segoe UI', sans-serif" font-weight="800" font-size="16" fill="#b8860b" letter-spacing="4">
+    UNIVERSITY
+  </text>
+  <text x="106" y="84" font-family="'Segoe UI', sans-serif" font-weight="600" font-size="8.5" fill="#64748b" letter-spacing="1.2">
+    LEADERSHIP • KNOWLEDGE • CHARACTER
+  </text>
+
+  <!-- Gradients -->
+  <defs>
+    <linearGradient id="cu_navy_grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0a1e3b"/>
+      <stop offset="50%" stop-color="#112d59"/>
+      <stop offset="100%" stop-color="#061427"/>
+    </linearGradient>
+    <linearGradient id="cu_gold_grad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#ffd700"/>
+      <stop offset="50%" stop-color="#d4af37"/>
+      <stop offset="100%" stop-color="#b8860b"/>
+    </linearGradient>
+  </defs>
+</svg>

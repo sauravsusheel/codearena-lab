@@ -1,0 +1,120 @@
+services:
+  sandbox-images:
+    build:
+      context: .
+      dockerfile: Dockerfile.codearena
+    command: ["node","scripts/build-sandbox-images.mjs"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: "no"
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: codearena
+      POSTGRES_USER: codearena
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}
+    volumes:
+      - codearena-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codearena -d codearena"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server","--appendonly","yes","--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
+    volumes:
+      - codearena-redis:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"${REDIS_PASSWORD:?Set REDIS_PASSWORD}\" ping | grep PONG"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  codearena-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.codearena
+    ports:
+      - "8787:8787"
+    environment:
+      CODEARENA_PORT: 8787
+      CODEARENA_JWT_SECRET: ${CODEARENA_JWT_SECRET:?Set a strong JWT secret}
+      CODEARENA_WORKER_SECRET: ${CODEARENA_WORKER_SECRET:?Set a strong worker secret}
+      CODEARENA_CORS_ORIGIN: ${CODEARENA_CORS_ORIGIN:-http://localhost:5173}
+      CODEARENA_PRODUCTION: "1"
+      CODEARENA_DOCKER: "1"
+      CODEARENA_SANDBOX_RUNTIME: ${CODEARENA_SANDBOX_RUNTIME:-}
+      CODEARENA_EXTERNAL_WORKER: "1"
+      CODEARENA_REDIS_REQUIRED: "1"
+      CODEARENA_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      CODEARENA_REDIS_QUEUE_KEY: codearena:submissions
+      DATABASE_URL: postgresql://codearena:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/codearena
+      CODEARENA_MIN_LEARNING_HOURS: ${CODEARENA_MIN_LEARNING_HOURS:-5}
+      CODEARENA_SSO_JWT_SECRET: ${CODEARENA_SSO_JWT_SECRET:-}
+      CODEARENA_BOOTSTRAP_ADMIN_USN: ${CODEARENA_BOOTSTRAP_ADMIN_USN:-}
+      CODEARENA_BOOTSTRAP_ADMIN_NAME: ${CODEARENA_BOOTSTRAP_ADMIN_NAME:-CodeArena Administrator}
+      CODEARENA_BOOTSTRAP_ADMIN_PASSWORD: ${CODEARENA_BOOTSTRAP_ADMIN_PASSWORD:-}
+    volumes:
+      - codearena-data:/app/server/data
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      postgres: { condition: service_healthy }
+      redis: { condition: service_healthy }
+      sandbox-images: { condition: service_completed_successfully }
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.frontend
+      args:
+        VITE_CODEARENA_API_URL: /api-proxy
+        VITE_CODEARENA_REQUIRE_AUTH: "1"
+    environment:
+      CODEARENA_API_PROXY_TARGET: ${CODEARENA_API_PROXY_TARGET:-http://codearena-api:8787}
+    ports:
+      - "5173:80"
+    depends_on:
+      codearena-api: { condition: service_started }
+    restart: unless-stopped
+
+  judge-worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.codearena
+    command: ["node","scripts/judge-worker.mjs"]
+    environment:
+      NODE_ENV: production
+      CODEARENA_PRODUCTION: "1"
+      CODEARENA_DOCKER: "1"
+      CODEARENA_API_URL: http://codearena-api:8787
+      CODEARENA_WORKER_SECRET: ${CODEARENA_WORKER_SECRET:?Set a strong worker secret}
+      CODEARENA_REDIS_URL: redis://:${REDIS_PASSWORD:?Set REDIS_PASSWORD}@redis:6379/0
+      CODEARENA_SANDBOX_RUNTIME: ${CODEARENA_SANDBOX_RUNTIME:-}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    depends_on:
+      codearena-api: { condition: service_started }
+      redis: { condition: service_healthy }
+      sandbox-images: { condition: service_completed_successfully }
+
+  backup:
+    build:
+      context: .
+      dockerfile: Dockerfile.codearena
+    command: ["sh","-lc","while true; do node scripts/backup-codearena.mjs || true; sleep 21600; done"]
+    environment:
+      DATABASE_URL: postgresql://codearena:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD}@postgres:5432/codearena
+      CODEARENA_BACKUP_DIR: /app/server/backups
+    volumes:
+      - codearena-backups:/app/server/backups
+    depends_on:
+      postgres: { condition: service_healthy }
+
+volumes:
+  codearena-data:
+  codearena-postgres:
+  codearena-redis:
+  codearena-backups:

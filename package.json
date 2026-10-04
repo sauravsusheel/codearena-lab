@@ -1,0 +1,50 @@
+{
+  "name": "chanakya-university-portal",
+  "private": true,
+  "version": "1.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc && vite build",
+    "typecheck": "tsc --noEmit",
+    "preview": "vite preview",
+    "server": "node server/index.mjs",
+    "server:docker": "node scripts/server-docker.mjs",
+    "dev:full": "node scripts/dev-full.mjs",
+    "dev:docker": "node scripts/dev-docker.mjs",
+    "sandbox:images": "node scripts/build-sandbox-images.mjs",
+    "healthcheck:startup": "node scripts/startup-healthcheck.mjs",
+    "test:codearena": "node --test tests/codearena.api.test.mjs",
+    "backup:codearena": "node scripts/backup-codearena.mjs",
+    "restore:codearena": "node scripts/restore-codearena.mjs",
+    "worker": "node scripts/judge-worker.mjs",
+    "test:codearena:production": "node --test tests/codearena.production.test.mjs",
+    "test": "npm run test:codearena",
+    "verify:production": "node scripts/verify-production-config.mjs",
+    "verify:all": "npm run typecheck && npm run build && npm run test:codearena && npm run test:codearena:production && npm run verify:production",
+    "install:production": "npm ci --no-audit --no-fund --omit=optional",
+    "test:codearena:sandbox": "node --test tests/sandbox.static.test.mjs",
+    "test:codearena:all": "npm run test:codearena && npm run test:codearena:lms && npm run test:codearena:sandbox && npm run test:codearena:security && npm run test:codearena:production",
+    "test:codearena:lms": "node --test tests/codearena.lms.test.mjs",
+    "test:codearena:security": "node --test tests/codearena.security.test.mjs"
+  },
+  "dependencies": {
+    "@types/qrcode": "^1.5.6",
+    "clsx": "^2.1.1",
+    "lucide-react": "^0.344.0",
+    "qrcode": "^1.5.4",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "tailwind-merge": "^2.2.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.2.66",
+    "@types/react-dom": "^18.2.22",
+    "@vitejs/plugin-react": "^4.2.1",
+    "autoprefixer": "^10.4.19",
+    "postcss": "^8.4.38",
+    "tailwindcss": "^3.4.1",
+    "typescript": "^5.2.2",
+    "vite": "^5.1.6"
+  }
+}

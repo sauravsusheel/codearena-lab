@@ -1,0 +1,14 @@
+.git
+.vscode
+node_modules
+dist
+coverage
+documentation
+server/data
+server/backups
+.env
+.env.*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+*.log

@@ -1,0 +1,107 @@
+version: '3.8'
+
+x-logging: &default-logging
+  logging:
+    driver: json-file
+    options:
+      max-size: '20m'
+      max-file: '5'
+
+services:
+  judge0-server:
+    image: judge0/judge0:1.13.1
+    container_name: unisphere-judge0-server
+    restart: unless-stopped
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+    ports:
+      - "127.0.0.1:2358:2358"
+    environment:
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=Judge0StrongSecureDbSecret2026!
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+    networks:
+      - judge0-network
+    <<: *default-logging
+
+  judge0-worker:
+    image: judge0/judge0:1.13.1
+    container_name: unisphere-judge0-worker
+    restart: unless-stopped
+    privileged: true
+    volumes:
+      - ./judge0.conf:/judge0.conf:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    environment:
+      - REDIS_HOST=judge0-redis
+      - REDIS_PORT=6379
+      - POSTGRES_HOST=judge0-db
+      - POSTGRES_PORT=5432
+      - POSTGRES_DB=judge0
+      - POSTGRES_USER=judge0
+      - POSTGRES_PASSWORD=Judge0StrongSecureDbSecret2026!
+    depends_on:
+      judge0-db:
+        condition: service_healthy
+      judge0-redis:
+        condition: service_healthy
+    networks:
+      - judge0-network
+    deploy:
+      resources:
+        limits:
+          cpus: '4.0'
+          memory: 4096M
+    <<: *default-logging
+
+  judge0-redis:
+    image: redis:7.2-alpine
+    container_name: unisphere-judge0-redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "512mb", "--maxmemory-policy", "noeviction"]
+    volumes:
+      - judge0-redis-data:/data
+    networks:
+      - judge0-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    <<: *default-logging
+
+  judge0-db:
+    image: postgres:16-alpine
+    container_name: unisphere-judge0-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: judge0
+      POSTGRES_USER: judge0
+      POSTGRES_PASSWORD: Judge0StrongSecureDbSecret2026!
+    volumes:
+      - judge0-db-data:/var/lib/postgresql/data
+    networks:
+      - judge0-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U judge0 -d judge0"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    <<: *default-logging
+
+networks:
+  judge0-network:
+    driver: bridge
+
+volumes:
+  judge0-db-data:
+  judge0-redis-data:

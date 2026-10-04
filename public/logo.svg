@@ -1,0 +1,15 @@
+﻿<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 400 100" fill="none">
+  <!-- Gold circular emblem with Ashwatha and Dharma Chakra inspired motifs -->
+  <circle cx="50" cy="50" r="40" fill="#C69930" />
+  <circle cx="50" cy="50" r="36" fill="#002561" />
+  <circle cx="50" cy="50" r="33" fill="#C69930" />
+  <circle cx="50" cy="50" r="28" fill="#002561" />
+  <!-- Radiant Ashwatha Leaf / Sun Rays Motif -->
+  <path d="M50 25 C55 35 68 42 68 52 C68 62 58 72 50 75 C42 72 32 62 32 52 C32 42 45 35 50 25 Z" fill="#C69930"/>
+  <circle cx="50" cy="52" r="7" fill="#002561" />
+  <circle cx="50" cy="52" r="3.5" fill="#DB6C29" />
+  <!-- University Typography Wordmark -->
+  <text x="105" y="47" font-family="'Merriweather', 'Georgia', serif" font-weight="700" font-size="28" fill="#FFFFFF" letter-spacing="1.5">CHANAKYA</text>
+  <text x="105" y="73" font-family="'Merriweather', 'Georgia', serif" font-weight="600" font-size="22" fill="#FFFFFF" letter-spacing="3">UNIVERSITY</text>
+  <text x="106" y="87" font-family="'Inter', sans-serif" font-weight="500" font-size="9" fill="#DB6C29" letter-spacing="1.5">IDEAS WITH IDEALS • ESTD. 2022</text>
+</svg>

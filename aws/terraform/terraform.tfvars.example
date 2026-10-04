@@ -1,0 +1,16 @@
+aws_region = "ap-south-1"
+project_name = "codearena"
+instance_type = "t3.large"
+desired_ec2_capacity = 1
+min_ec2_capacity = 1
+max_ec2_capacity = 3
+api_desired_count = 1
+worker_desired_count = 1
+
+# Optional: use an existing ACM certificate ARN for HTTPS.
+# certificate_arn = "arn:aws:acm:ap-south-1:ACCOUNT:certificate/..."
+# domain_name = "codearena.example.com"
+
+# Optional first-run administrator. Prefer leaving blank and provisioning the account through the LMS/SSO flow.
+# bootstrap_admin_usn = "CODEARENA-ADMIN"
+# bootstrap_admin_password = "use-a-long-random-password"
