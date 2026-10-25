@@ -3,7 +3,7 @@ import {
   Monitor, Cpu, HardDrive, ShieldCheck, AlertTriangle, 
   CheckCircle2, RefreshCw, Wrench, Plus, Filter, Search, 
   Download, Power, Terminal, Lock, Unlock, Eye, X, Check,
-  Laptop, Server, Radio
+  Laptop, Server, Radio, Key, Copy
 } from 'lucide-react';
 import { codeArenaApi } from '../services/codeArenaApi';
 
@@ -124,6 +124,18 @@ export const LabWorkstationInventory: React.FC = () => {
   const handleRebootStation = async (stationId: string) => {
     try { await codeArenaApi.reboot(stationId); await loadLiveData(); showToast(`${stationId} reboot signal recorded by the CodeArena backend.`); }
     catch { showToast(`Unable to reach the station backend for ${stationId}.`); }
+  };
+
+  const [tokenModal, setTokenModal] = useState<{ stationId: string; token: string } | null>(null);
+
+  const handleRotateToken = async (stationId: string) => {
+    try {
+      const res = await codeArenaApi.rotateStationToken(stationId);
+      setTokenModal(res);
+      showToast(`Agent token for ${stationId} generated successfully.`);
+    } catch {
+      showToast(`Token rotation failed. Super Admin permissions required.`);
+    }
   };
 
   const handleBroadcastReset = async () => {
@@ -428,8 +440,16 @@ export const LabWorkstationInventory: React.FC = () => {
               <button
                 onClick={() => handleRebootStation(selectedStation.id)}
                 className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-cu-border text-cu-navy hover:bg-gray-50 text-xs font-semibold transition"
+                title="Send remote reboot command to physical workstation"
               >
                 <RefreshCw size={13} /> Reboot Daemon
+              </button>
+              <button
+                onClick={() => handleRotateToken(selectedStation.id)}
+                className="flex items-center gap-1 px-3 py-1.5 rounded-lg border border-amber-500/40 text-amber-800 bg-amber-50/50 hover:bg-amber-100/60 text-xs font-semibold transition"
+                title="Rotate workstation agent secret and pairing token"
+              >
+                <Key size={13} /> Rotate Token
               </button>
               <button
                 onClick={() => handleOpenIncident(selectedStation.id)}
@@ -661,6 +681,72 @@ export const LabWorkstationInventory: React.FC = () => {
                 </button>
               </div>
             </form>
+          </div>
+        </div>
+      )}
+
+      {/* Station Agent Token Rotation Modal */}
+      {tokenModal && (
+        <div className="fixed inset-0 bg-slate-900/60 backdrop-blur-xs flex items-center justify-center p-4 z-50 animate-fadeIn">
+          <div className="bg-white rounded-2xl max-w-lg w-full p-5 shadow-2xl border border-cu-border space-y-4">
+            <div className="flex items-center justify-between border-b border-gray-100 pb-3">
+              <div className="flex items-center gap-2">
+                <div className="p-2 rounded-xl bg-amber-50 text-amber-700">
+                  <Key size={18} />
+                </div>
+                <div>
+                  <h3 className="font-serif font-bold text-sm text-cu-navy">Workstation Agent Pairing Token</h3>
+                  <p className="text-[11px] text-gray-500">Node ID: {tokenModal.stationId}</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setTokenModal(null)}
+                className="p-1.5 text-gray-400 hover:text-gray-600 rounded-lg"
+              >
+                <X size={16} />
+              </button>
+            </div>
+
+            <div className="space-y-3 text-xs">
+              <div>
+                <span className="font-semibold text-gray-700 block mb-1">Rotated Secret Token:</span>
+                <div className="flex items-center gap-2 bg-gray-50 border border-gray-200 rounded-xl p-2.5 font-mono text-[11px] text-gray-800 break-all select-all">
+                  <span className="flex-1">{tokenModal.token}</span>
+                  <button
+                    onClick={() => {
+                      navigator.clipboard.writeText(tokenModal.token);
+                      showToast('Token copied to clipboard');
+                    }}
+                    className="p-1 hover:bg-gray-200 rounded text-gray-500 hover:text-gray-800 transition shrink-0"
+                    title="Copy Token"
+                  >
+                    <Copy size={14} />
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <span className="font-semibold text-gray-700 block mb-1">Launch Agent on Workstation:</span>
+                <div className="bg-slate-900 text-slate-100 rounded-xl p-3 font-mono text-[11px] space-y-1">
+                  <p className="text-slate-400"># Run on physical workstation {tokenModal.stationId}:</p>
+                  <p className="text-amber-300">export CODEARENA_STATION_TOKEN="{tokenModal.token}"</p>
+                  <p className="text-emerald-400">node scripts/station-agent.mjs {tokenModal.stationId} http://SERVER:8787</p>
+                </div>
+              </div>
+
+              <div className="p-3 bg-amber-50 rounded-xl border border-amber-200/60 text-[11px] text-amber-800">
+                This token authenticates the workstation's real-time hardware telemetry and allows remote maintenance commands (such as reboot and container reset).
+              </div>
+            </div>
+
+            <div className="flex items-center justify-end pt-2 border-t border-gray-100">
+              <button
+                onClick={() => setTokenModal(null)}
+                className="px-4 py-1.5 rounded-lg bg-cu-navy text-white font-bold hover:bg-blue-950 transition text-xs shadow-sm"
+              >
+                Done
+              </button>
+            </div>
           </div>
         </div>
       )}

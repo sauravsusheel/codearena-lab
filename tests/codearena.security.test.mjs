@@ -18,8 +18,8 @@ async function req(path,options={}){
   return {r,body};
 }
 before(async()=>{
-  await rm('server/data',{recursive:true,force:true});
-  proc=spawn(process.execPath,['server/index.mjs'],{env:{...process.env,CODEARENA_PORT:'8881',CODEARENA_ALLOW_HEADER_AUTH:'1',CODEARENA_SSO_JWT_SECRET:SSO_SECRET}});
+  await rm('server/data_test_sec',{recursive:true,force:true});
+  proc=spawn(process.execPath,['server/index.mjs'],{env:{...process.env,CODEARENA_DATA_DIR:'server/data_test_sec',CODEARENA_PORT:'8881',CODEARENA_ALLOW_HEADER_AUTH:'1',CODEARENA_SSO_JWT_SECRET:SSO_SECRET}});
   await new Promise((resolve,reject)=>{const t=setTimeout(()=>reject(new Error('server start timeout')),5000);proc.stdout.on('data',d=>{if(String(d).includes('CodeArena API listening')){clearTimeout(t);resolve();}});proc.stderr.on('data',d=>process.stderr.write(d));});
 });
 after(()=>proc?.kill());

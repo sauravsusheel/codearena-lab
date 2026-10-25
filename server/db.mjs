@@ -4,8 +4,8 @@ import { spawnSync } from 'node:child_process';
 import path from 'node:path';
 
 const ROOT = process.cwd();
-const DATA_DIR = path.join(ROOT, 'server', 'data');
-const DB_PATH = path.join(DATA_DIR, 'codearena.sqlite');
+const DATA_DIR = process.env.CODEARENA_DATA_DIR ? path.resolve(process.env.CODEARENA_DATA_DIR) : path.join(ROOT, 'server', 'data');
+const DB_PATH = process.env.CODEARENA_DB_PATH ? path.resolve(process.env.CODEARENA_DB_PATH) : path.join(DATA_DIR, 'codearena.sqlite');
 mkdirSync(DATA_DIR, { recursive: true });
 
 const SQLITE_SCHEMA = `

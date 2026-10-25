@@ -86,6 +86,7 @@ export const codeArenaApi = {
   },
   heartbeat: (stationId:string,data:any) => request<any>(`/api/codearena/stations/${encodeURIComponent(stationId)}/heartbeat`,{method:'POST',body:JSON.stringify(data)}),
   reboot: (stationId:string) => request<any>(`/api/codearena/stations/${encodeURIComponent(stationId)}/reboot`,{method:'POST'}),
+  rotateStationToken: (stationId:string) => request<{stationId:string;token:string}>(`/api/codearena/stations/${encodeURIComponent(stationId)}/agent-credentials`,{method:'POST'}),
   resetStations: () => request<any>('/api/codearena/stations/reset',{method:'POST'}),
   timeRecords: async (subjectCode='ALL') => {
     const rows = await request<any[]>(`/api/codearena/time-records?subjectCode=${encodeURIComponent(subjectCode)}`);

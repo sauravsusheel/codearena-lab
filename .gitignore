@@ -51,3 +51,5 @@ pnpm-debug.log*
 server/data/*.sqlite
 server/data/*.sqlite-*
 server/data/runs/
+server/data_test_*/
+

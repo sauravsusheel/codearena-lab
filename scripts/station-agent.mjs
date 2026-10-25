@@ -21,7 +21,9 @@ async function pollCommands(){
       try{
         if(command.command==='REBOOT'){
           const platform=process.platform;
-          if(platform==='win32') result=await new Promise((resolve,reject)=>{const p=spawn('shutdown',['/r','/t','0','/f'],{windowsHide:true});p.on('error',reject);p.on('close',c=>resolve(`shutdown exit ${c}`));});
+          if(process.env.CODEARENA_MOCK_REBOOT==='1'||process.env.CODEARENA_STATION_AGENT_DRY_RUN==='1'){
+            result='Simulated workstation reboot executed successfully (dry run)';
+          } else if(platform==='win32') result=await new Promise((resolve,reject)=>{const p=spawn('shutdown',['/r','/t','0','/f'],{windowsHide:true});p.on('error',reject);p.on('close',c=>resolve(`shutdown exit ${c}`));});
           else result=await new Promise((resolve,reject)=>{const p=spawn('systemctl',['reboot']);p.on('error',reject);p.on('close',c=>resolve(`systemctl reboot exit ${c}`));});
         } else if(command.command==='RESET') {
           result='Station reset acknowledged by agent';

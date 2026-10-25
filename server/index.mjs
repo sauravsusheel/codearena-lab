@@ -73,7 +73,11 @@ const ensureDockerRuntime = async () => {
   if (process.env.CODEARENA_DOCKER !== '1') return;
   const ok = await dockerAvailable();
   if (!ok) {
-    throw new Error('CodeArena startup requires Docker Desktop/Engine to be running because CODEARENA_DOCKER=1 is enabled.');
+    if (PRODUCTION) {
+      throw new Error('CodeArena startup requires Docker Desktop/Engine to be running because CODEARENA_DOCKER=1 is enabled.');
+    }
+    console.warn('Docker daemon is unavailable; CodeArena sandbox execution will fail closed.');
+    return;
   }
   console.log('CodeArena Docker sandboxing is enabled and Docker is available.');
 };

@@ -24,9 +24,12 @@
     "verify:all": "npm run typecheck && npm run build && npm run test:codearena && npm run test:codearena:production && npm run verify:production",
     "install:production": "npm ci --no-audit --no-fund --omit=optional",
     "test:codearena:sandbox": "node --test tests/sandbox.static.test.mjs",
-    "test:codearena:all": "npm run test:codearena && npm run test:codearena:lms && npm run test:codearena:sandbox && npm run test:codearena:security && npm run test:codearena:production",
+    "test:codearena:station": "node --test tests/codearena.station.test.mjs",
+    "test:codearena:gvisor": "node --test tests/codearena.gvisor.test.mjs",
+    "test:codearena:redis": "node --test tests/codearena.redis-load.test.mjs",
     "test:codearena:lms": "node --test tests/codearena.lms.test.mjs",
-    "test:codearena:security": "node --test tests/codearena.security.test.mjs"
+    "test:codearena:security": "node --test tests/codearena.security.test.mjs",
+    "test:codearena:all": "npm run test:codearena && npm run test:codearena:station && npm run test:codearena:gvisor && npm run test:codearena:redis && npm run test:codearena:lms && npm run test:codearena:sandbox && npm run test:codearena:security && npm run test:codearena:production"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.6",
