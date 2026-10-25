@@ -96,7 +96,7 @@ export const PRESET_ROLES: Record<UserRole, UserProfile> = {
   },
   STUDENT: {
     id: 'usr_std_01',
-    name: 'Arjun Kumar',
+    name: 'Saurav Kumar',
     employeeId: '24MCA003',
     email: 'student@chanakya.edu',
     dummyUsername: 'student@chanakya.edu',

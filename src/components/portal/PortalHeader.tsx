@@ -61,7 +61,7 @@ export const PortalHeader: React.FC<PortalHeaderProps> = ({
   const rolesList: { role: UserRole; label: string; name: string }[] = [
     { role: 'SUPER_ADMIN',           label: 'University Registrar',          name: 'Dr. R. Sharma' },
     { role: 'IT_ADMIN',              label: 'IT & Cybersecurity Admin',       name: 'Arun Mehta' },
-    { role: 'STUDENT',               label: 'MCA Student (CR)',              name: 'Arjun Kumar' },
+    { role: 'STUDENT',               label: 'MCA Student (CR)',              name: 'Saurav Kumar' },
     { role: 'FACULTY',               label: 'Faculty Lead',                  name: 'Deepak B' },
     { role: 'DEAN',                  label: 'Dean of School',                name: 'Prof. K. Venkatesh' },
     { role: 'EXAMINATION_CONTROLLER',label: 'Controller of Examinations',    name: 'Dr. S. Ranganath' },
