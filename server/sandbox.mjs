@@ -72,14 +72,20 @@ export function commandFor(language) {
 function spawnProcess(cmd,args,{input='',timeoutMs=5000,maxOutput=1000000,onStart=()=>{},onStdout=()=>{},onStderr=()=>{}}={}) {
   return new Promise(resolve=>{
     const started=Date.now(); let out='',err='',timedOut=false,outputLimit=false;
-    const p=spawn(cmd,args,{stdio:['pipe','pipe','pipe']}); onStart(p);
+    let p;
+    try {
+      p=spawn(cmd,args,{stdio:['pipe','pipe','pipe']});
+    } catch(e) {
+      return resolve({code:-1,stdout:'',stderr:e.message,timeMs:0,timedOut:false,outputLimit:false,processError:true});
+    }
+    onStart(p);
     const kill=()=>{try{p.kill('SIGKILL')}catch{}};
     const timer=setTimeout(()=>{timedOut=true;kill()},timeoutMs);
     const take=(target,chunk,fn)=>{const s=chunk.toString(); if(target==='out')out+=s; else err+=s; fn(s); if(out.length+err.length>maxOutput&&!outputLimit){outputLimit=true;kill()}};
-    p.stdout.on('data',d=>take('out',d,onStdout)); p.stderr.on('data',d=>take('err',d,onStderr));
+    p.stdout?.on('data',d=>take('out',d,onStdout)); p.stderr?.on('data',d=>take('err',d,onStderr));
     p.on('error',e=>{clearTimeout(timer);resolve({code:-1,stdout:out,stderr:e.message,timeMs:Date.now()-started,timedOut,outputLimit,processError:true})});
     p.on('close',code=>{clearTimeout(timer);resolve({code,stdout:out,stderr:err,timeMs:Date.now()-started,timedOut,outputLimit})});
-    if(input) p.stdin.write(input); p.stdin.end();
+    if(input && p.stdin) { try { p.stdin.write(input); p.stdin.end(); } catch {} }
   });
 }
 
@@ -101,7 +107,7 @@ export async function runDocker(language, source, input='', limits={time:2000,me
   const extraFiles=[...sourceFiles.keys()];
   const stage=extraFiles.map(f=>`cp /tmp/${f} /work/${f}`).join(' && ');
   const runtimeScript=`mkdir -p /work && ${stage} && ${spec.script}`;
-  const args=['create','--name',name,'--network','none','--read-only','--pids-limit','64','--cpus',String(Math.max(0.1,Number(limits.cpu||1))),'--memory',`${Math.max(16,Number(limits.memory||256))}m`,'--memory-swap',`${Math.max(16,Number(limits.memory||256))}m`,'--cap-drop','ALL','--security-opt','no-new-privileges','--user','1000:1000','--ulimit','nofile=256:256','--ulimit','nproc=64:64','--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=64m','--tmpfs','/work:rw,exec,nosuid,nodev,size=64m','-w','/work','-e','HOME=/tmp','-e','TMPDIR=/tmp',spec.image,'sh','-lc','sleep 600'];
+  const args=['create','--name',name,'--network','none','--read-only','--pids-limit','64','--cpus',String(Math.max(0.1,Number(limits.cpu||1))),'--memory',`${Math.max(16,Number(limits.memory||256))}m`,'--memory-swap',`${Math.max(16,Number(limits.memory||256))}m`,'--cap-drop','ALL','--security-opt','no-new-privileges','--user','1000:1000','--ulimit','nofile=256:256','--ulimit','nproc=64:64','--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777','--tmpfs','/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777','-w','/work','-e','HOME=/tmp','-e','TMPDIR=/tmp',spec.image,'sh','-lc','sleep 600'];
   if(process.env.CODEARENA_SANDBOX_RUNTIME) { const idx=args.indexOf(spec.image); args.splice(idx,0,'--runtime',process.env.CODEARENA_SANDBOX_RUNTIME); }
   try {
     const created=await spawnProcess('docker',args,{timeoutMs:10000,maxOutput:20000});
@@ -155,8 +161,8 @@ export async function startDockerInteractive(language, source, options = {}) {
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
     '--user', '1000:1000',
     '--ulimit', 'nofile=256:256', '--ulimit', 'nproc=64:64',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m',
-    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=64m',
+    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
+    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
     '-w', '/work', '-e', 'HOME=/tmp', '-e', 'TMPDIR=/tmp',
     spec.image, 'sh', '-lc', 'sleep 600'
   ];
@@ -208,6 +214,6 @@ export async function startDockerInteractive(language, source, options = {}) {
 }
 
 export async function dockerAvailable(){
-  const r=await spawnProcess('docker',['info','--format','{{.ServerVersion}}'],{timeoutMs:10000,maxOutput:1000});
+  const r=await spawnProcess('docker',['info','--format','{{.ServerVersion}}'],{timeoutMs:20000,maxOutput:1000});
   return r.code===0 && Boolean(r.stdout.trim());
 }
