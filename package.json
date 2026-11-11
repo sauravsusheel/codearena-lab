@@ -29,20 +29,31 @@
     "test:codearena:redis": "node --test tests/codearena.redis-load.test.mjs",
     "test:codearena:lms": "node --test tests/codearena.lms.test.mjs",
     "test:codearena:security": "node --test tests/codearena.security.test.mjs",
+    "test:codearena:students": "npx tsx --test tests/student-judge-sync.test.mjs",
+    "test:cu_runner": "node --test tests/test-cu-runner.test.mjs",
     "test:codearena:all": "npm run test:codearena && npm run test:codearena:station && npm run test:codearena:gvisor && npm run test:codearena:redis && npm run test:codearena:lms && npm run test:codearena:sandbox && npm run test:codearena:security && npm run test:codearena:production"
   },
   "dependencies": {
     "@types/qrcode": "^1.5.6",
     "clsx": "^2.1.1",
+    "express": "^5.3.0",
+    "ioredis": "^6.0.0",
     "lucide-react": "^0.344.0",
+    "pg": "^8.23.1",
     "qrcode": "^1.5.4",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
-    "tailwind-merge": "^2.2.1"
+    "tailwind-merge": "^2.2.1",
+    "ws": "^8.22.2",
+    "zod": "^4.6.7"
   },
   "devDependencies": {
+    "@types/express": "^5.0.6",
+    "@types/node": "^26.6.6",
+    "@types/pg": "^8.23.1",
     "@types/react": "^18.2.66",
     "@types/react-dom": "^18.2.22",
+    "@types/ws": "^8.18.2",
     "@vitejs/plugin-react": "^4.2.1",
     "autoprefixer": "^10.4.19",
     "postcss": "^8.4.38",

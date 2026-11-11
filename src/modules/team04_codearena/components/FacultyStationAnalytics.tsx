@@ -5,6 +5,7 @@ import {
   TrendingUp, Laptop, RefreshCw, Cpu, Sparkles, Shield
 } from 'lucide-react';
 import { judgeService } from '../services/judgeService';
+import { normalizeStation } from '../services/codeArenaApi';
 import { CurriculumSubject, StudentCodingStation, StudentLabTimeRecord } from '../types/codearena.types';
 
 export const FacultyStationAnalytics: React.FC = () => {
@@ -15,6 +16,8 @@ export const FacultyStationAnalytics: React.FC = () => {
   const [activeView, setActiveView] = useState<'stations' | 'timeTable'>('stations');
   const [searchQuery, setSearchQuery] = useState('');
   const [refreshing, setRefreshing] = useState(false);
+  const [wsConnected, setWsConnected] = useState(false);
+  const [lastAlert, setLastAlert] = useState<string | null>(null);
 
   const loadData = async () => {
     setRefreshing(true);
@@ -32,6 +35,71 @@ export const FacultyStationAnalytics: React.FC = () => {
   useEffect(() => {
     loadData();
   }, [selectedSubjectCode]);
+
+  // Connect to Real-time WebSocket Telemetry Stream
+  useEffect(() => {
+    let ws: WebSocket | null = null;
+    let reconnectTimeout: any = null;
+
+    const connect = () => {
+      try {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        const token = localStorage.getItem('codearena_auth_token') || '';
+        const wsUrl = `${protocol}//${host}/ws/telemetry?role=faculty&token=${encodeURIComponent(token)}`;
+        ws = new WebSocket(wsUrl);
+
+        ws.onopen = () => {
+          setWsConnected(true);
+        };
+
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.type === 'FLEET_SNAPSHOT' && Array.isArray(data.stations)) {
+              setStations(data.stations.map(normalizeStation));
+            } else if (data.type === 'STATION_HEARTBEAT' && data.station) {
+              const updated = normalizeStation(data.station);
+              setStations(prev => {
+                const idx = prev.findIndex(s => s.stationId === updated.stationId || (s as any).id === (updated as any).id);
+                if (idx >= 0) {
+                  const next = [...prev];
+                  next[idx] = updated;
+                  return next;
+                }
+                return [...prev, updated];
+              });
+            } else if (data.type === 'PLAGIARISM_ALERT' && data.payload) {
+              setLastAlert(`Automated Plagiarism Alert: Problem "${data.payload.problemTitle || data.payload.problemId}" flagged with ${data.payload.similarity}% similarity`);
+            }
+          } catch {}
+        };
+
+        ws.onclose = () => {
+          setWsConnected(false);
+          reconnectTimeout = setTimeout(connect, 4000);
+        };
+
+        ws.onerror = () => {
+          setWsConnected(false);
+          try { ws?.close(); } catch {}
+        };
+      } catch {
+        setWsConnected(false);
+        reconnectTimeout = setTimeout(connect, 4000);
+      }
+    };
+
+    connect();
+
+    return () => {
+      clearTimeout(reconnectTimeout);
+      if (ws) {
+        ws.onclose = null;
+        ws.close();
+      }
+    };
+  }, []);
 
   // Compute Top KPI Statistics
   const totalHoursLogged = timeRecords.reduce((acc, r) => acc + r.totalHoursSpent, 0).toFixed(1);
@@ -125,15 +193,34 @@ export const FacultyStationAnalytics: React.FC = () => {
           </div>
         </div>
 
-        <button 
-          onClick={loadData}
-          disabled={refreshing}
-          className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition shrink-0"
-        >
-          <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
-          <span>Refresh Live Heartbeats</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          <div className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl text-xs font-semibold shadow-sm transition ${wsConnected ? 'bg-emerald-50 text-emerald-800 border border-emerald-300' : 'bg-slate-100 text-slate-500 border border-slate-200'}`}>
+            <span className={`w-2 h-2 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-slate-400'}`} />
+            {wsConnected ? 'Live Telemetry Stream Active' : 'Polling Fallback Mode'}
+          </div>
+
+          <button 
+            onClick={loadData}
+            disabled={refreshing}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-white border border-slate-200 text-xs font-bold text-slate-700 hover:bg-slate-50 shadow-sm transition"
+          >
+            <RefreshCw size={13} className={refreshing ? 'animate-spin' : ''} />
+            <span>Refresh</span>
+          </button>
+        </div>
       </div>
+
+      {lastAlert && (
+        <div className="bg-red-50 border border-red-200 p-3.5 rounded-xl flex items-center justify-between gap-3 text-xs text-red-800 animate-pulse shadow-sm">
+          <div className="flex items-center gap-2">
+            <Shield size={16} className="text-red-600 shrink-0" />
+            <span className="font-semibold">{lastAlert}</span>
+          </div>
+          <button onClick={() => setLastAlert(null)} className="text-red-500 hover:text-red-700 font-bold px-2 py-0.5 rounded">
+            Dismiss
+          </button>
+        </div>
+      )}
 
       {/* TOP KPI CARDS: Real-time Student Coding Time & Station Telemetry */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">

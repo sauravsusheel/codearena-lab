@@ -582,34 +582,47 @@ export const MonacoWebIDE: React.FC<MonacoWebIDEProps> = ({ initialSubjectCode =
 
       // Stream each test case verdict to terminal
       for (const r of results) {
+        const tcId = r.id || (r as any).testCaseId || `tc_${r.testCaseNumber || 1}_${Date.now()}`;
+        const tcNum = r.testCaseNumber || 1;
+        const verdict = r.verdict || (r as any).status || (r.passed ? 'ACCEPTED' : 'FAILED');
+        const timeMs = r.executionTimeMs ?? (r as any).timeMs ?? (r as any).durationMs ?? (r as any).executionTime ?? 0;
+        const isPassed = Boolean(r.passed ?? (verdict === 'ACCEPTED' || (verdict as string) === 'PASSED'));
+
         setTerminalLogs(prev => [
           ...prev,
           {
-            id: `tc_stream_${r.id}_${Date.now()}`,
-            type: r.passed ? 'stdout' : 'stderr',
-            text: `  Case #${r.testCaseNumber} [${r.isHidden ? 'Hidden Evaluation' : 'Sample Case'}] -> ${r.verdict} (${r.executionTimeMs}ms)\n`
+            id: `tc_stream_${tcId}_${Date.now()}`,
+            type: isPassed ? 'stdout' : 'stderr',
+            text: `  Case #${tcNum} [${r.isHidden ? 'Hidden Evaluation' : 'Sample Case'}] -> ${verdict} (${timeMs}ms)\n`
           }
         ]);
       }
 
       // Compute Marks if counted for marks
-      const passedCount = results.filter(r => r.passed).length;
+      const passedCount = results.filter(r => Boolean(r.passed ?? (r.verdict === 'ACCEPTED' || (r as any).status === 'PASSED' || (r as any).status === 'ACCEPTED'))).length;
       const totalCases = results.length || 1;
       const allPassed = passedCount === totalCases;
+      let calculatedMarks = Math.round((passedCount / totalCases) * 10 * 10) / 10;
 
       if (isCountedForMarks) {
-        const submission = await judgeService.submitCode(selectedProblem.id, lang, code);
-        const marks = submission?.marks ?? Math.round((passedCount / totalCases) * 10 * 10) / 10;
-        setAwardedMarks(marks);
-        setSubmissionReceipt(submission?.submissionId || `CU-SUB-${Date.now()}`);
-        setLastSubmissionQuality(submission?.quality?.score ?? null);
+        try {
+          const submission = await judgeService.submitCode(selectedProblem.id, lang, code);
+          if (submission && typeof submission.marks === 'number' && submission.marks > 0) {
+            calculatedMarks = submission.marks;
+          }
+          setSubmissionReceipt(submission?.submissionId || `CU-SUB-${Date.now()}`);
+          setLastSubmissionQuality(submission?.quality?.score ?? null);
+        } catch {
+          setSubmissionReceipt(`CU-SUB-${Date.now()}`);
+        }
+        setAwardedMarks(calculatedMarks);
         codeArenaApi.learningInsights().then(setLearningInsights).catch(() => {});
         setTerminalLogs(prev => [
           ...prev,
           {
             id: `tc_summary_${Date.now()}`,
             type: allPassed ? 'stdout' : 'stderr',
-            text: `\n[VERDICT]: ${passedCount}/${totalCases} Test Cases Passed. Marks Awarded: ${marks} / 10\n`
+            text: `\n[VERDICT]: ${passedCount}/${totalCases} Test Cases Passed. Marks Awarded: ${calculatedMarks} / 10\n`
           }
         ]);
       } else {

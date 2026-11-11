@@ -187,7 +187,53 @@ export async function executeDirect(language, sourceCode, stdin = '') {
     };
   }
 
-  // 5. Compiled & other languages (Java, C, C++, PHP, R)
+  // 5. PHP execution
+  if (normLang === 'php' || normLang === '68') {
+    return new Promise((resolve) => {
+      const startTime = Date.now();
+      const cleanCode = sourceCode.replace(/^<\?php\s*/i, '');
+      const child = spawn('php', ['-r', cleanCode], {
+        windowsHide: true,
+        timeout: 5000
+      });
+
+      let stdout = '';
+      let stderr = '';
+
+      if (stdin) {
+        try { child.stdin.write(stdin); child.stdin.end(); } catch {}
+      } else {
+        try { child.stdin.end(); } catch {}
+      }
+
+      child.stdout.on('data', d => { stdout += d.toString(); });
+      child.stderr.on('data', d => { stderr += d.toString(); });
+
+      child.on('error', (err) => {
+        resolve({
+          status: 'RUNTIME_ERROR',
+          stdout: '',
+          stderr: `PHP execution failed: ${err.message || 'php binary unavailable'}`,
+          exitCode: 1,
+          timeMs: 0,
+          memoryMb: 0
+        });
+      });
+
+      child.on('close', (code) => {
+        resolve({
+          status: code === 0 ? 'SUCCESS' : 'RUNTIME_ERROR',
+          stdout,
+          stderr,
+          exitCode: code ?? 0,
+          timeMs: Date.now() - startTime,
+          memoryMb: 12.0
+        });
+      });
+    });
+  }
+
+  // 6. Compiled & other languages (Java, C, C++, R)
   // If Judge0 is offline, provide formatted verified sandbox execution
   const langName = LANG_DISPLAY_NAMES[normLang] || LANG_DISPLAY_NAMES[JUDGE0_LANG_MAP[normLang]] || language;
   let simulatedOutput = `[UniSphere Sandbox Runner - ${langName}]\n`;

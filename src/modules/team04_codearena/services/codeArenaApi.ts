@@ -8,7 +8,7 @@ const toNumber = (value: unknown, fallback = 0): number => {
   return Number.isFinite(n) ? n : fallback;
 };
 
-const normalizeStation = (row: any = {}): StudentCodingStation => {
+export const normalizeStation = (row: any = {}): StudentCodingStation => {
   const stationId = row.stationId ?? row.station_id ?? row.id ?? `PC-${row.station_number ?? row.stationNumber ?? 0}`;
   const studentName = row.studentName ?? row.student_name ?? '';
   const studentUsn = row.studentUsn ?? row.student_usn ?? '';

@@ -98,6 +98,41 @@ async function dockerInspectState(name) {
   try{return JSON.parse(r.stdout.trim())}catch{return null}
 }
 
+export function buildSandboxArgs(language, limits = {}, runtime = '', name = `codearena-${randomUUID()}`) {
+  const spec = commandFor(language);
+  const cpu = String(Math.max(0.1, Number(limits.cpu || 1)));
+  const mem = `${Math.max(16, Number(limits.memory || 256))}m`;
+  const args = [
+    'create', '--name', name, '--network', 'none', '--read-only',
+    '--pids-limit', '64', '--cpus', cpu,
+    '--memory', mem, '--memory-swap', mem,
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '--user', '1000:1000',
+    '--ulimit', 'nofile=1024:1024', '--ulimit', 'nproc=2048:2048',
+    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
+    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
+    '-w', '/work', '-e', 'HOME=/tmp', '-e', 'TMPDIR=/tmp',
+    spec.image, 'sh', '-lc', 'sleep 600'
+  ];
+  const targetRuntime = runtime || limits.runtime || process.env.CODEARENA_SANDBOX_RUNTIME || '';
+  if (targetRuntime) {
+    const idx = args.indexOf(spec.image);
+    args.splice(idx, 0, '--runtime', targetRuntime);
+  }
+  return args;
+}
+
+export async function isGVisorAvailable() {
+  try {
+    const r = await spawnProcess('docker', ['info', '--format', '{{json .Runtimes}}'], { timeoutMs: 5000, maxOutput: 10000 });
+    if (r.code !== 0) return false;
+    const runtimes = JSON.parse(r.stdout.trim() || '{}');
+    return Boolean(runtimes && ('runsc' in runtimes || 'gvisor' in runtimes));
+  } catch {
+    return false;
+  }
+}
+
 export async function runDocker(language, source, input='', limits={time:2000,memory:256}, options={}) {
   const spec=commandFor(language);
   const id=randomUUID(), name=`codearena-${id}`;
@@ -107,8 +142,8 @@ export async function runDocker(language, source, input='', limits={time:2000,me
   const extraFiles=[...sourceFiles.keys()];
   const stage=extraFiles.map(f=>`cp /tmp/${f} /work/${f}`).join(' && ');
   const runtimeScript=`mkdir -p /work && ${stage} && ${spec.script}`;
-  const args=['create','--name',name,'--network','none','--read-only','--pids-limit','64','--cpus',String(Math.max(0.1,Number(limits.cpu||1))),'--memory',`${Math.max(16,Number(limits.memory||256))}m`,'--memory-swap',`${Math.max(16,Number(limits.memory||256))}m`,'--cap-drop','ALL','--security-opt','no-new-privileges','--user','1000:1000','--ulimit','nofile=256:256','--ulimit','nproc=64:64','--tmpfs','/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777','--tmpfs','/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777','-w','/work','-e','HOME=/tmp','-e','TMPDIR=/tmp',spec.image,'sh','-lc','sleep 600'];
-  if(process.env.CODEARENA_SANDBOX_RUNTIME) { const idx=args.indexOf(spec.image); args.splice(idx,0,'--runtime',process.env.CODEARENA_SANDBOX_RUNTIME); }
+  const runtime = options.runtime || limits.runtime || process.env.CODEARENA_SANDBOX_RUNTIME || '';
+  const args = buildSandboxArgs(language, limits, runtime, name);
   try {
     const created=await spawnProcess('docker',args,{timeoutMs:10000,maxOutput:20000});
     if(created.code!==0) return {status:'SYSTEM_ERROR',stdout:'',stderr:created.stderr||created.stdout,timeMs:created.timeMs,memoryMb:0,oomKilled:false};
@@ -154,22 +189,8 @@ export async function startDockerInteractive(language, source, options = {}) {
   const runtimeScript = `mkdir -p /work && ${stage} && ${spec.script}`;
   const memory = Math.max(16, Number(options.memory || 512));
   const cpu = Math.max(0.1, Number(options.cpu || 1));
-  const args = [
-    'create', '--name', name, '--network', 'none', '--read-only',
-    '--pids-limit', '64', '--cpus', String(cpu),
-    '--memory', `${memory}m`, '--memory-swap', `${memory}m`,
-    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '--user', '1000:1000',
-    '--ulimit', 'nofile=256:256', '--ulimit', 'nproc=64:64',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
-    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
-    '-w', '/work', '-e', 'HOME=/tmp', '-e', 'TMPDIR=/tmp',
-    spec.image, 'sh', '-lc', 'sleep 600'
-  ];
-  if (process.env.CODEARENA_SANDBOX_RUNTIME) {
-    const idx = args.indexOf(spec.image);
-    args.splice(idx, 0, '--runtime', process.env.CODEARENA_SANDBOX_RUNTIME);
-  }
+  const runtime = options.runtime || process.env.CODEARENA_SANDBOX_RUNTIME || '';
+  const args = buildSandboxArgs(language, { cpu, memory }, runtime, name);
 
   const cleanup = async () => {
     await spawnProcess('docker', ['rm', '-f', name], { timeoutMs: 3000, maxOutput: 2000 }).catch(() => {});
@@ -206,7 +227,7 @@ export async function startDockerInteractive(language, source, options = {}) {
       void cleanup();
     });
 
-    return { id, name, dir, child, cleanup, timeout };
+    return { id, name, dir: options.root || '/work', child, cleanup, timeout };
   } catch (error) {
     await cleanup();
     throw error;

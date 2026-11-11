@@ -57,6 +57,15 @@ class RespReader {
         return val;
       });
     }
+    if (head.startsWith('*')) {
+      const count = Number(head.slice(1));
+      if (count === -1) return null;
+      const arr = [];
+      for (let i = 0; i < count; i++) {
+        arr.push(await this.readResponse());
+      }
+      return arr;
+    }
     throw new Error(`Unsupported Redis response: ${head}`);
   }
 }
@@ -77,3 +86,115 @@ export async function redisCommand(url, parts) {
 }
 export const redisPush = (url, key, value) => redisCommand(url, ['LPUSH', key, value]);
 export const redisPop = (url, key) => redisCommand(url, ['RPOP', key]);
+
+export const DEFAULT_PRIORITY_QUEUES = [
+  'codearena:submissions:priority',
+  'codearena:submissions:standard',
+  'codearena:submissions:batch',
+  'codearena:submissions'
+];
+
+export function parseRedisUrls(val) {
+  if (Array.isArray(val)) return val.filter(Boolean);
+  const raw = String(val || process.env.CODEARENA_REDIS_URLS || process.env.CODEARENA_REDIS_URL || 'redis://127.0.0.1:6379/0');
+  return raw.split(',').map(s => s.trim()).filter(Boolean);
+}
+
+export async function redisMultiPush(urls, key, value) {
+  const list = parseRedisUrls(urls);
+  let lastErr = null;
+  for (const u of list) {
+    try {
+      return await redisPush(u, key, value);
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+  throw lastErr || new Error('No available Redis instances for redisMultiPush');
+}
+
+export async function redisMultiPop(urls, queueKeys = DEFAULT_PRIORITY_QUEUES) {
+  const list = parseRedisUrls(urls);
+  const keys = Array.isArray(queueKeys) ? queueKeys : [queueKeys];
+  for (const u of list) {
+    try {
+      for (const k of keys) {
+        const item = await redisPop(u, k);
+        if (item) {
+          return { id: item, queue: k, redisUrl: u };
+        }
+      }
+    } catch {
+      // Instance down or unreachable, continue to next instance in pool
+    }
+  }
+  return null;
+}
+
+export async function registerWorker(urls, workerInfo, ttlSec = 15) {
+  const list = parseRedisUrls(urls);
+  const payload = JSON.stringify({
+    ...workerInfo,
+    registeredAt: workerInfo.registeredAt || new Date().toISOString(),
+    lastHeartbeat: new Date().toISOString()
+  });
+  const key = `codearena:workers:${workerInfo.id}`;
+  for (const u of list) {
+    try {
+      await redisCommand(u, ['SETEX', key, String(ttlSec), payload]);
+      await redisCommand(u, ['SADD', 'codearena:workers:active', workerInfo.id]);
+    } catch {}
+  }
+}
+
+export async function heartbeatWorker(urls, workerId, stats = {}, ttlSec = 15) {
+  const list = parseRedisUrls(urls);
+  const key = `codearena:workers:${workerId}`;
+  for (const u of list) {
+    try {
+      const existing = await redisCommand(u, ['GET', key]);
+      const current = existing ? JSON.parse(existing) : { id: workerId };
+      const updated = JSON.stringify({
+        ...current,
+        ...stats,
+        lastHeartbeat: new Date().toISOString()
+      });
+      await redisCommand(u, ['SETEX', key, String(ttlSec), updated]);
+      await redisCommand(u, ['SADD', 'codearena:workers:active', workerId]);
+    } catch {}
+  }
+}
+
+export async function unregisterWorker(urls, workerId) {
+  const list = parseRedisUrls(urls);
+  const key = `codearena:workers:${workerId}`;
+  for (const u of list) {
+    try {
+      await redisCommand(u, ['DEL', key]);
+      await redisCommand(u, ['SREM', 'codearena:workers:active', workerId]);
+    } catch {}
+  }
+}
+
+export async function getActiveWorkers(urls) {
+  const list = parseRedisUrls(urls);
+  for (const u of list) {
+    try {
+      const members = await redisCommand(u, ['SMEMBERS', 'codearena:workers:active']);
+      if (!Array.isArray(members)) continue;
+      const workers = [];
+      for (const id of members) {
+        const info = await redisCommand(u, ['GET', `codearena:workers:${id}`]);
+        if (info) {
+          try { workers.push(JSON.parse(info)); } catch {}
+        } else {
+          // Worker TTL expired, clean up from set
+          void redisCommand(u, ['SREM', 'codearena:workers:active', id]).catch(() => {});
+        }
+      }
+      return workers;
+    } catch {}
+  }
+  return [];
+}
+

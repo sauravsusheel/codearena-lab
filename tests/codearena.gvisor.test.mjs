@@ -1,29 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { commandFor, SANDBOX_IMAGES } from '../server/sandbox.mjs';
-
-function buildSandboxArgs(language, limits = {}, runtime = '') {
-  const spec = commandFor(language);
-  const name = 'codearena-test-security';
-  const args = [
-    'create', '--name', name, '--network', 'none', '--read-only',
-    '--pids-limit', '64', '--cpus', String(Math.max(0.1, Number(limits.cpu || 1))),
-    '--memory', `${Math.max(16, Number(limits.memory || 256))}m`,
-    '--memory-swap', `${Math.max(16, Number(limits.memory || 256))}m`,
-    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
-    '--user', '1000:1000',
-    '--ulimit', 'nofile=256:256', '--ulimit', 'nproc=64:64',
-    '--tmpfs', '/tmp:rw,noexec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
-    '--tmpfs', '/work:rw,exec,nosuid,nodev,size=64m,uid=1000,gid=1000,mode=1777',
-    '-w', '/work', '-e', 'HOME=/tmp', '-e', 'TMPDIR=/tmp',
-    spec.image, 'sh', '-lc', 'sleep 600'
-  ];
-  if (runtime) {
-    const idx = args.indexOf(spec.image);
-    args.splice(idx, 0, '--runtime', runtime);
-  }
-  return args;
-}
+import { commandFor, SANDBOX_IMAGES, buildSandboxArgs, isGVisorAvailable } from '../server/sandbox.mjs';
 
 test('gVisor (runsc) runtime is correctly positioned before container image in arguments', () => {
   const args = buildSandboxArgs('python', {}, 'runsc');
@@ -52,3 +29,9 @@ test('standard sandbox defaults to runc when CODEARENA_SANDBOX_RUNTIME is empty'
   const args = buildSandboxArgs('python', {}, '');
   assert.equal(args.includes('--runtime'), false, 'Default container invocation should not pass custom runtime');
 });
+
+test('isGVisorAvailable returns a boolean indicating host runsc registration', async () => {
+  const available = await isGVisorAvailable();
+  assert.equal(typeof available, 'boolean');
+});
+

@@ -4,11 +4,12 @@ import { randomUUID, createHmac, scryptSync, randomBytes, timingSafeEqual } from
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 import net from 'node:net';
-import { redisCommand, redisPush, redisPop } from './redisQueue.mjs';
+import { redisCommand, redisPush, redisPop, redisMultiPush, parseRedisUrls, getActiveWorkers, DEFAULT_PRIORITY_QUEUES } from './redisQueue.mjs';
 import { db, DB_PATH, DATA_DIR } from './db.mjs';
 import { analyze as analyzePlagiarism } from './plagiarism.mjs';
-import { runDocker, startDockerInteractive, dockerAvailable } from './sandbox.mjs';
+import { runDocker, startDockerInteractive, dockerAvailable, isGVisorAvailable } from './sandbox.mjs';
 import { handleExecuteSubmit, handleExecutePoll, startFallbackInteractiveSession, executeCodeUnified } from './judge0Execution.mjs';
+import { initTelemetryWebSocket, broadcastStationHeartbeat, broadcastTelemetryEvent, sendStationCommand } from './telemetryWs.mjs';
 
 const resolvePort = async (preferredPort = 8787) => {
   const net = await import('node:net');
@@ -51,6 +52,7 @@ const HOST = process.env.CODEARENA_HOST || (PRODUCTION ? '0.0.0.0' : '127.0.0.1'
 const ROOT = process.cwd();
 const RUN_ROOT = path.join(DATA_DIR, 'runs');
 const REDIS_URL = process.env.CODEARENA_REDIS_URL || 'redis://127.0.0.1:6379/0';
+const REDIS_URLS = parseRedisUrls(process.env.CODEARENA_REDIS_URLS || process.env.CODEARENA_REDIS_URL || 'redis://127.0.0.1:6379/0');
 const REDIS_QUEUE_KEY = process.env.CODEARENA_REDIS_QUEUE_KEY || 'codearena:submissions';
 const SANDBOX_RUNTIME = process.env.CODEARENA_SANDBOX_RUNTIME || '';
 const REQUIRE_REDIS = process.env.CODEARENA_EXTERNAL_WORKER === '1' || process.env.CODEARENA_REDIS_REQUIRED === '1';
@@ -85,7 +87,8 @@ const ensureDockerRuntime = async () => {
 const now = () => new Date().toISOString();
 const stmt = (sql) => db.prepare(sql);
 const safeJson = (x, fallback = {}) => { try { return JSON.parse(x); } catch { return fallback; } };
-const norm = (s='') => String(s).replace(/\r/g,'').trim().replace(/\s+/g,' ');
+const norm = (s='') => String(s ?? '').replace(/\r\n/g,'\n').replace(/\r/g,'\n').trim();
+const normTokens = (s='') => String(s ?? '').replace(/\r/g,'').trim().split(/\s+/).join(' ');
 const hashPassword = (p) => { const salt = randomBytes(16).toString('hex'); return `${salt}:${scryptSync(p,salt,64).toString('hex')}`; };
 const verifyPassword = (p,h) => { const [salt,hex] = String(h||'').split(':'); if(!salt||!hex)return false; const a=scryptSync(p,salt,64),b=Buffer.from(hex,'hex'); return a.length===b.length&&timingSafeEqual(a,b); };
 const signToken = (payload,ttlMs=8*60*60*1000) => { const body=Buffer.from(JSON.stringify({...payload,exp:Date.now()+ttlMs})).toString('base64url'); return `${body}.${createHmac('sha256',process.env.CODEARENA_JWT_SECRET||'change-me-in-production').update(body).digest('base64url')}`; };
@@ -266,9 +269,24 @@ async function startInteractiveDocker(language, source, initialStdin = '') {
   if (initialStdin) session.child.stdin.write(String(initialStdin));
   return id;
 }
-async function redisQueueLength(){try{return Number(await redisCommand(REDIS_URL,['LLEN',REDIS_QUEUE_KEY]))||0;}catch{return 0;}}
+async function redisQueueLength(){
+  try {
+    let total = 0;
+    for (const k of DEFAULT_PRIORITY_QUEUES) {
+      total += Number(await redisCommand(REDIS_URL, ['LLEN', k])) || 0;
+    }
+    return total;
+  } catch {
+    return 0;
+  }
+}
 async function redisHealthy(){try{return String(await redisCommand(REDIS_URL,['PING'])).toUpperCase()==='PONG';}catch{return false;}}
-async function enqueueExternalSubmission(id){if(!(await redisHealthy()))throw Object.assign(new Error('Redis queue unavailable; submission was not accepted'),{status:503});await redisPush(REDIS_URL,REDIS_QUEUE_KEY,id);}
+async function enqueueExternalSubmission(id, priority = 'standard'){
+  if(!(await redisHealthy()))throw Object.assign(new Error('Redis queue unavailable; submission was not accepted'),{status:503});
+  const qKey = priority === 'priority' ? 'codearena:submissions:priority' : 'codearena:submissions:standard';
+  await redisMultiPush(REDIS_URLS, qKey, id);
+  void redisMultiPush(REDIS_URLS, 'codearena:submissions', id).catch(() => {});
+}
 
 function commandFor(language, dir){
   const f=path.join(dir,'Main');
@@ -316,7 +334,7 @@ async function processSubmission(id){
     const r=await dockerExecute(row.language,row.source_code,t.input,{time:row.time_limit_ms,memory:row.memory_limit_mb,maxOutput:1000000});
     max=Math.max(max,r.timeMs||0); peak=Math.max(peak,r.memoryMb||0);
     if(r.status!=='SUCCESS'){verdict=r.status;break;}
-    if(norm(r.stdout)!==norm(t.expected_output)){verdict='WRONG_ANSWER';break;}
+    if(norm(r.stdout)!==norm(t.expected_output) && normTokens(r.stdout)!==normTokens(t.expected_output)){verdict='WRONG_ANSWER';break;}
     passed++;
   }
   const total=tests.length; const marks=Math.round((passed/Math.max(total,1))*row.points*100)/100;
@@ -326,7 +344,55 @@ async function processSubmission(id){
   if(existingGrade) stmt('UPDATE gradebook SET marks=?,max_marks=?,updated_at=? WHERE id=? AND locked=0').run(marks,row.points,now(),existingGrade.id); else stmt('INSERT INTO gradebook VALUES(?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),row.user_id,subjectCode,'CODEARENA',row.problem_id,marks,row.points,0,0,now());
   notify(row.user_id,'Submission evaluated',`${row.title}: ${verdict} (${marks}/${row.points})`,verdict==='ACCEPTED'?'SUCCESS':'WARNING');
   audit(row.user_id,'SUBMIT','SUBMISSION',id,{verdict,passed,total,runtimeMs:max,memoryMb:peak});
+  void triggerAutomatedPlagiarismAudit(id);
   return {id,verdict,passed,total,marks};
+}
+
+async function triggerAutomatedPlagiarismAudit(submissionId) {
+  try {
+    const sub = stmt('SELECT s.*, p.title FROM submissions s JOIN problems p ON p.id=s.problem_id WHERE s.id=?').get(submissionId);
+    if (!sub || !sub.source_code || sub.verdict !== 'ACCEPTED') return;
+    const peers = stmt("SELECT id, user_id, source_code, plagiarism_score FROM submissions WHERE problem_id=? AND user_id!=? AND source_code IS NOT NULL AND verdict='ACCEPTED' ORDER BY created_at DESC LIMIT 50").all(sub.problem_id, sub.user_id);
+    let maxScore = 0;
+    for (const peer of peers) {
+      const analysis = analyzePlagiarism(sub.source_code, peer.source_code);
+      const score = analysis.score;
+      if (score >= 50) {
+        maxScore = Math.max(maxScore, score);
+        const reviewId = randomUUID();
+        const evidence = {
+          engine: 'language-agnostic structural token + Winnowing AST',
+          hashMatches: analysis.winnowingHashMatchCount,
+          tokensA: analysis.tokensA,
+          tokensB: analysis.tokensB,
+          flaggedLogicClones: analysis.flaggedLogicClones,
+          trigger: 'automated-submission-hook'
+        };
+        stmt("INSERT INTO plagiarism_reviews (id, submission_id, compared_submission_id, similarity, evidence_json, status, reviewed_by, reviewed_at) VALUES (?, ?, ?, ?, ?, 'FLAGGED', NULL, NULL)").run(
+          reviewId, sub.id, peer.id, score, JSON.stringify(evidence)
+        );
+        stmt('UPDATE submissions SET plagiarism_score=MAX(COALESCE(plagiarism_score, 0), ?) WHERE id=?').run(score, peer.id);
+        const facultyList = stmt("SELECT id FROM users WHERE role IN ('FACULTY', 'SUPER_ADMIN') AND active=1").all();
+        for (const fac of facultyList) {
+          notify(fac.id, 'Plagiarism Alert: High Structural Similarity', `Submission ${sub.id.slice(0, 8)} (${sub.title}) matches student ${peer.user_id} with ${score}% similarity`, 'WARNING');
+        }
+        broadcastTelemetryEvent('PLAGIARISM_ALERT', {
+          reviewId,
+          submissionId: sub.id,
+          comparedSubmissionId: peer.id,
+          problemId: sub.problem_id,
+          problemTitle: sub.title,
+          similarity: score,
+          evidence
+        });
+      }
+    }
+    if (maxScore > 0) {
+      stmt('UPDATE submissions SET plagiarism_score=? WHERE id=?').run(maxScore, sub.id);
+    }
+  } catch (err) {
+    console.error('Automated plagiarism audit error:', err.message);
+  }
 }
 
 function audit(userId,action,type,id,details){stmt('INSERT INTO audit_logs VALUES(?,?,?,?,?,?,?)').run(randomUUID(),userId,action,type,id,JSON.stringify(details||{}),now());}
@@ -522,7 +588,56 @@ async function handle(req,res){
       for(const [index,t] of (Array.isArray(b.testCases)?b.testCases:[]).entries()){const input=String(t.input??'');const expectedOutput=String(t.expectedOutput??t.expected_output??'');if(!expectedOutput && !t.allowEmptyExpected)throw Object.assign(new Error(`Test case ${index+1} expectedOutput is required`),{status:400});stmt('INSERT INTO test_cases(id,problem_id,test_case_number,input,expected_output,is_hidden,weight) VALUES(?,?,?,?,?,?,?)').run(randomUUID(),id,index+1,input,expectedOutput,t.isHidden||t.is_hidden?1:0,Number(t.weight||1));}
       audit(user.sub,'CREATE','PROBLEM',id,{...b,testCasesCount:Array.isArray(b.testCases)?b.testCases.length:0});return ok(res,{id});}
     if(p==='/api/codearena/run'&&req.method==='POST'){const user=auth(req);const b=await body(req);const r=await dockerExecute(b.language,b.sourceCode,b.customInput||'',{time:Number(b.timeLimitMs||3000),memory:Number(b.memoryLimitMb||256)});audit(user.sub,'RUN','CODE',null,{language:b.language});return ok(res,{stdout:r.stdout,stderr:r.stderr,exitCode:r.status==='SUCCESS'?0:1,timeMs:r.timeMs,memoryMb:r.memoryMb,status:r.status});}
-    if(p==='/api/codearena/evaluate'&&req.method==='POST'){const user=auth(req);const b=await body(req);const prob=stmt('SELECT * FROM problems WHERE id=?').get(b.problemId);if(!prob)throw Object.assign(new Error('Problem not found'),{status:404});if(user.role==='STUDENT') studentAssignment(user,b.problemId,b.sectionId||null,false);const privileged=['FACULTY','SUPER_ADMIN','COORDINATOR','LAB_INSTRUCTOR'].includes(user.role);const tests=stmt('SELECT * FROM test_cases WHERE problem_id=? ORDER BY test_case_number').all(prob.id);const results=[];for(const t of tests){const r=await dockerExecute(b.language,b.sourceCode,t.input,{time:prob.time_limit_ms,memory:prob.memory_limit_mb});const passed=r.status==='SUCCESS'&&norm(r.stdout)===norm(t.expected_output);const item={testCaseId:t.id,testCaseNumber:t.test_case_number,status:r.status==='SUCCESS'?(passed?'PASSED':'WRONG_ANSWER'):r.status,timeMs:r.timeMs,memoryMb:r.memoryMb,isHidden:Boolean(t.is_hidden)};if(!t.is_hidden||privileged){item.actualOutput=r.stdout;item.expectedOutput=t.expected_output;}else{item.actualOutput=passed?'Hidden (Passed)':'Hidden';item.expectedOutput='Hidden';}results.push(item);}audit(user.sub,'EVALUATE','PROBLEM',prob.id,{count:results.length});return ok(res,{results,quality:quality(b.sourceCode)});}
+    if(p==='/api/codearena/evaluate'&&req.method==='POST'){
+      const user=auth(req);
+      const b=await body(req);
+      const prob=stmt('SELECT * FROM problems WHERE id=?').get(b.problemId);
+      if(!prob)throw Object.assign(new Error('Problem not found'),{status:404});
+      if(user.role==='STUDENT') studentAssignment(user,b.problemId,b.sectionId||null,false);
+      const privileged=['FACULTY','SUPER_ADMIN','COORDINATOR','LAB_INSTRUCTOR'].includes(user.role);
+      const tests=stmt('SELECT * FROM test_cases WHERE problem_id=? ORDER BY test_case_number').all(prob.id);
+      const results=[];
+      for(const t of tests){
+        const r=await dockerExecute(b.language,b.sourceCode,t.input,{time:prob.time_limit_ms,memory:prob.memory_limit_mb});
+        const passed=r.status==='SUCCESS'&&(norm(r.stdout)===norm(t.expected_output)||normTokens(r.stdout)===normTokens(t.expected_output));
+        const verdict=r.status==='SUCCESS'?(passed?'ACCEPTED':'WRONG_ANSWER'):(r.status||'RUNTIME_ERROR');
+        const status=r.status==='SUCCESS'?(passed?'PASSED':'WRONG_ANSWER'):(r.status||'RUNTIME_ERROR');
+        const durationMs=Number(r.timeMs??0);
+        const memoryMb=Number(r.memoryMb??0);
+        const memoryKb=Math.round(memoryMb*1024);
+        const item={
+          id:t.id,
+          testCaseId:t.id,
+          testCaseNumber:Number(t.test_case_number||1),
+          status,
+          verdict,
+          passed:Boolean(passed),
+          timeMs:durationMs,
+          executionTimeMs:durationMs,
+          durationMs,
+          executionTime:durationMs,
+          time:durationMs,
+          memoryMb,
+          memoryKb,
+          isHidden:Boolean(t.is_hidden),
+          stderr:r.stderr||''
+        };
+        if(!t.is_hidden||privileged){
+          item.input=t.input;
+          item.actualOutput=r.stdout??'';
+          item.expectedOutput=t.expected_output??'';
+        }else{
+          item.actualOutput=passed?'Hidden (Passed)':'Hidden';
+          item.expectedOutput='Hidden';
+        }
+        if(!passed&&r.status!=='SUCCESS'){
+          item.errorMessage=r.stderr||`Execution status: ${r.status}`;
+        }
+        results.push(item);
+      }
+      audit(user.sub,'EVALUATE','PROBLEM',prob.id,{count:results.length});
+      return ok(res,{results,quality:quality(b.sourceCode)});
+    }
     if(p==='/api/codearena/submit'&&req.method==='POST'){
       const user=auth(req);const b=await body(req);const prob=stmt('SELECT * FROM problems WHERE id=?').get(b.problemId);
       if(!prob)throw Object.assign(new Error('Problem not found'),{status:404});
@@ -545,7 +660,7 @@ async function handle(req,res){
       if(process.env.CODEARENA_EXTERNAL_WORKER!=='1' && process.env.CODEARENA_DOCKER!=='1') throw Object.assign(new Error('CodeArena execution is unavailable until Docker sandboxing is enabled'),{status:503});
       const id=randomUUID();
       stmt('INSERT INTO submissions(id,user_id,problem_id,language,source_code,verdict,passed,total,runtime_ms,memory_mb,marks,created_at,quality_json,exam_id,lms_section_id,queue_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)').run(id,user.sub,b.problemId,b.language,b.sourceCode,'PENDING',0,0,0,0,0,now(),JSON.stringify(quality(b.sourceCode)),examId,lmsSectionId,'QUEUED');
-      if(process.env.CODEARENA_EXTERNAL_WORKER==='1'){try{await enqueueExternalSubmission(id);}catch(e){stmt("UPDATE submissions SET queue_status='SYSTEM_ERROR',verdict='SYSTEM_ERROR' WHERE id=?").run(id);audit(user.sub,'QUEUE_FAILURE','SUBMISSION',id,{error:e.message});throw e;}}else queue.enqueue(()=>processSubmission(id));
+      if(process.env.CODEARENA_EXTERNAL_WORKER==='1'){try{await enqueueExternalSubmission(id, examId ? 'priority' : 'standard');}catch(e){stmt("UPDATE submissions SET queue_status='SYSTEM_ERROR',verdict='SYSTEM_ERROR' WHERE id=?").run(id);audit(user.sub,'QUEUE_FAILURE','SUBMISSION',id,{error:e.message});throw e;}}else queue.enqueue(()=>processSubmission(id));
       if(examId)stmt('INSERT INTO exam_submissions VALUES(?,?,?,?)').run(examId,user.sub,id,now());
       lmsAudit(user,lmsSectionId,'CODE_SUBMISSION_CREATED',id,{problemId:b.problemId,examId});
       return ok(res,{submissionId:id,status:'QUEUED',verdict:'PENDING',lmsSectionId});
@@ -555,8 +670,8 @@ async function handle(req,res){
     if(p==='/api/codearena/drafts'&&req.method==='POST'){const user=auth(req);const b=await body(req);const old=stmt('SELECT * FROM drafts WHERE user_id=? AND semester=? AND subject_code=? AND problem_id=? AND language=?').get(user.sub,b.semester,b.subjectCode,b.problemId||'',b.language);const id=old?.id||randomUUID(),version=(old?.version||0)+1;if(old)stmt('UPDATE drafts SET code=?,version=?,updated_at=? WHERE id=?').run(b.code,version,now(),id);else stmt('INSERT INTO drafts(id,user_id,semester,subject_code,problem_id,language,code,version,updated_at) VALUES(?,?,?,?,?,?,?,?,?)').run(id,user.sub,b.semester,b.subjectCode,b.problemId||'',b.language,b.code,version,now());stmt('INSERT INTO draft_versions VALUES(?,?,?,?,?)').run(randomUUID(),id,version,b.code,now());return ok(res,{id,version,updatedAt:now()});}
     if(p==='/api/codearena/draft-versions'&&req.method==='GET'){const user=auth(req);const rows=stmt('SELECT dv.* FROM draft_versions dv JOIN drafts d ON d.id=dv.draft_id WHERE d.user_id=? ORDER BY dv.saved_at DESC LIMIT 100').all(user.sub);return ok(res,rows);}
     if(p==='/api/codearena/stations'&&req.method==='GET'){auth(req,['FACULTY','SUPER_ADMIN','COORDINATOR','LAB_INSTRUCTOR']);return ok(res,stmt('SELECT id,station_number,ip_address,row_name,os,cpu_cores,ram_gb,gpu_model,sandbox_runtime,status,cpu_usage_pct,ram_usage_pct,student_usn,student_name,subject_code,language,current_problem_title,session_minutes,active_minutes,idle_minutes,total_submissions,accepted_submissions,last_heartbeat,incident_notes,hardware_json FROM stations ORDER BY station_number').all());}
-    if(p.match(/^\/api\/codearena\/stations\/[^/]+\/heartbeat$/)&&req.method==='POST'){const id=p.split('/')[4];const station=stmt('SELECT agent_token FROM stations WHERE id=?').get(id);if(!station)throw Object.assign(new Error('Station not found'),{status:404});if((req.headers['x-station-token']||'')!==station.agent_token && process.env.CODEARENA_ALLOW_ANONYMOUS_HEARTBEAT!=='1')throw Object.assign(new Error('Station authentication required'),{status:401});const b=await body(req);stmt('UPDATE stations SET status=?,ip_address=?,cpu_usage_pct=?,ram_usage_pct=?,student_usn=?,student_name=?,subject_code=?,language=?,current_problem_title=?,session_minutes=?,active_minutes=?,idle_minutes=?,total_submissions=?,accepted_submissions=?,last_heartbeat=?,hardware_json=? WHERE id=?').run(b.status||'OPERATIONAL',b.ipAddress||'',b.cpuUsagePct||0,b.ramUsagePct||0,b.studentUsn||null,b.studentName||null,b.subjectCode||null,b.language||null,b.currentProblemTitle||null,b.sessionMinutes||0,b.activeMinutes||0,b.idleMinutes||0,b.totalSubmissions||0,b.acceptedSubmissions||0,now(),JSON.stringify(b.hardware||{}),id);return ok(res,{ok:true,stationId:id,lastHeartbeat:now()});}
-    if(p.match(/^\/api\/codearena\/stations\/[^/]+\/(reboot|reset)$/)&&req.method==='POST'){const user=auth(req,['FACULTY','SUPER_ADMIN','LAB_INSTRUCTOR']);const id=p.split('/')[4];const action=p.split('/').pop();if(!stmt('SELECT 1 FROM stations WHERE id=?').get(id))throw Object.assign(new Error('Station not found'),{status:404});const commandId=randomUUID();stmt('INSERT INTO station_commands VALUES(?,?,?,?,?,?,?)').run(commandId,id,action==='reboot'?'REBOOT':'RESET','QUEUED',now(),null,null);stmt('UPDATE stations SET status=? WHERE id=?').run(action==='reboot'?'REBOOTING':'RESETTING',id);audit(user.sub,'STATION_ACTION','STATION',id,{action,commandId});return ok(res,{ok:true,commandId,status:'QUEUED'});}
+    if(p.match(/^\/api\/codearena\/stations\/[^/]+\/heartbeat$/)&&req.method==='POST'){const id=p.split('/')[4];const station=stmt('SELECT agent_token FROM stations WHERE id=?').get(id);if(!station)throw Object.assign(new Error('Station not found'),{status:404});if((req.headers['x-station-token']||'')!==station.agent_token && process.env.CODEARENA_ALLOW_ANONYMOUS_HEARTBEAT!=='1')throw Object.assign(new Error('Station authentication required'),{status:401});const b=await body(req);stmt('UPDATE stations SET status=?,ip_address=?,cpu_usage_pct=?,ram_usage_pct=?,student_usn=?,student_name=?,subject_code=?,language=?,current_problem_title=?,session_minutes=?,active_minutes=?,idle_minutes=?,total_submissions=?,accepted_submissions=?,last_heartbeat=?,hardware_json=? WHERE id=?').run(b.status||'OPERATIONAL',b.ipAddress||'',b.cpuUsagePct||0,b.ramUsagePct||0,b.studentUsn||null,b.studentName||null,b.subjectCode||null,b.language||null,b.currentProblemTitle||null,b.sessionMinutes||0,b.activeMinutes||0,b.idleMinutes||0,b.totalSubmissions||0,b.acceptedSubmissions||0,now(),JSON.stringify(b.hardware||{}),id);const updated=stmt('SELECT * FROM stations WHERE id=?').get(id);if(updated)broadcastStationHeartbeat(updated);return ok(res,{ok:true,stationId:id,lastHeartbeat:now()});}
+    if(p.match(/^\/api\/codearena\/stations\/[^/]+\/(reboot|reset)$/)&&req.method==='POST'){const user=auth(req,['FACULTY','SUPER_ADMIN','LAB_INSTRUCTOR']);const id=p.split('/')[4];const action=p.split('/').pop();if(!stmt('SELECT 1 FROM stations WHERE id=?').get(id))throw Object.assign(new Error('Station not found'),{status:404});const commandId=randomUUID();stmt('INSERT INTO station_commands VALUES(?,?,?,?,?,?,?)').run(commandId,id,action==='reboot'?'REBOOT':'RESET','QUEUED',now(),null,null);stmt('UPDATE stations SET status=? WHERE id=?').run(action==='reboot'?'REBOOTING':'RESETTING',id);sendStationCommand(id,{id:commandId,command:action==='reboot'?'REBOOT':'RESET'});audit(user.sub,'STATION_ACTION','STATION',id,{action,commandId});return ok(res,{ok:true,commandId,status:'QUEUED'});}
     if(p.match(/^\/api\/codearena\/stations\/[^/]+\/agent-credentials$/)&&req.method==='POST'){const user=auth(req,['SUPER_ADMIN']);const id=p.split('/')[4];if(!stmt('SELECT 1 FROM stations WHERE id=?').get(id))throw Object.assign(new Error('Station not found'),{status:404});const token=randomBytes(32).toString('hex');stmt('UPDATE stations SET agent_token=? WHERE id=?').run(token,id);audit(user.sub,'ROTATE_STATION_TOKEN','STATION',id,{});return ok(res,{stationId:id,token});}
     if(p.match(/^\/api\/codearena\/stations\/[^/]+\/commands$/)&&req.method==='GET'){const id=p.split('/')[4];const station=stmt('SELECT agent_token FROM stations WHERE id=?').get(id);if(!station)throw Object.assign(new Error('Station not found'),{status:404});if((req.headers['x-station-token']||'')!==station.agent_token)throw Object.assign(new Error('Station authentication required'),{status:401});return ok(res,stmt("SELECT id,command,created_at FROM station_commands WHERE station_id=? AND status='QUEUED' ORDER BY created_at LIMIT 5").all(id));}
     if(p.match(/^\/api\/codearena\/stations\/[^/]+\/commands\/[^/]+\/ack$/)&&req.method==='POST'){const parts=p.split('/');const stationId=parts[4],commandId=parts[6];const station=stmt('SELECT agent_token FROM stations WHERE id=?').get(stationId);if(!station||req.headers['x-station-token']!==station.agent_token)throw Object.assign(new Error('Station authentication required'),{status:401});const b=await body(req);stmt('UPDATE station_commands SET status=?,acknowledged_at=?,result=? WHERE id=? AND station_id=?').run(b.status==='SUCCESS'?'COMPLETED':'FAILED',now(),b.result||'',commandId,stationId);if(b.status==='SUCCESS')stmt('UPDATE stations SET status=? WHERE id=?').run('OPERATIONAL',stationId);return ok(res,{ok:true});}
@@ -605,7 +720,8 @@ async function handle(req,res){
       if(changed.changes) await enqueueExternalSubmission(id);
       return ok(res,{ok:true,requeued:Boolean(changed.changes)});
     }
-    if(p==='/api/internal/worker/complete'&&req.method==='POST'){if((req.headers['x-worker-secret']||'')!==(process.env.CODEARENA_WORKER_SECRET||'change-me-in-production'))throw Object.assign(new Error('Forbidden'),{status:403});const b=await body(req);const row=stmt('SELECT s.*,p.title,p.points,p.subject_id FROM submissions s JOIN problems p ON p.id=s.problem_id WHERE s.id=?').get(b.id);if(!row)throw Object.assign(new Error('Submission not found'),{status:404});const marks=Number(b.marks||0);stmt('UPDATE submissions SET verdict=?,passed=?,total=?,runtime_ms=?,memory_mb=?,marks=?,queue_status=\'COMPLETED\',queue_started_at=NULL WHERE id=?').run(b.verdict,b.passed||0,b.total||0,b.runtimeMs||0,b.memoryMb||0,marks,b.id);const subjectCode=stmt('SELECT code FROM subjects WHERE id=?').get(row.subject_id)?.code||'';const existingGrade=stmt('SELECT id FROM gradebook WHERE user_id=? AND assessment_type=? AND assessment_id=?').get(row.user_id,'CODEARENA',row.problem_id);if(existingGrade)stmt('UPDATE gradebook SET marks=?,max_marks=?,updated_at=? WHERE id=? AND locked=0').run(marks,row.points,now(),existingGrade.id);else stmt('INSERT INTO gradebook VALUES(?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),row.user_id,subjectCode,'CODEARENA',row.problem_id,marks,row.points,0,0,now());notify(row.user_id,'Submission evaluated',`${row.title}: ${b.verdict} (${marks}/${row.points})`,b.verdict==='ACCEPTED'?'SUCCESS':'WARNING');audit(row.user_id,'SUBMIT','SUBMISSION',b.id,{verdict:b.verdict,passed:b.passed,total:b.total,worker:'external'});return ok(res,{ok:true});}
+    if(p==='/api/internal/worker/complete'&&req.method==='POST'){if((req.headers['x-worker-secret']||'')!==(process.env.CODEARENA_WORKER_SECRET||'change-me-in-production'))throw Object.assign(new Error('Forbidden'),{status:403});const b=await body(req);const row=stmt('SELECT s.*,p.title,p.points,p.subject_id FROM submissions s JOIN problems p ON p.id=s.problem_id WHERE s.id=?').get(b.id);if(!row)throw Object.assign(new Error('Submission not found'),{status:404});const marks=Number(b.marks||0);stmt('UPDATE submissions SET verdict=?,passed=?,total=?,runtime_ms=?,memory_mb=?,marks=?,queue_status=\'COMPLETED\',queue_started_at=NULL WHERE id=?').run(b.verdict,b.passed||0,b.total||0,b.runtimeMs||0,b.memoryMb||0,marks,b.id);const subjectCode=stmt('SELECT code FROM subjects WHERE id=?').get(row.subject_id)?.code||'';const existingGrade=stmt('SELECT id FROM gradebook WHERE user_id=? AND assessment_type=? AND assessment_id=?').get(row.user_id,'CODEARENA',row.problem_id);if(existingGrade)stmt('UPDATE gradebook SET marks=?,max_marks=?,updated_at=? WHERE id=? AND locked=0').run(marks,row.points,now(),existingGrade.id);else stmt('INSERT INTO gradebook VALUES(?,?,?,?,?,?,?,?,?,?)').run(randomUUID(),row.user_id,subjectCode,'CODEARENA',row.problem_id,marks,row.points,0,0,now());notify(row.user_id,'Submission evaluated',`${row.title}: ${b.verdict} (${marks}/${row.points})`,b.verdict==='ACCEPTED'?'SUCCESS':'WARNING');audit(row.user_id,'SUBMIT','SUBMISSION',b.id,{verdict:b.verdict,passed:b.passed,total:b.total,worker:'external'});void triggerAutomatedPlagiarismAudit(b.id);return ok(res,{ok:true});}
+    if(p==='/api/codearena/workers'&&req.method==='GET'){auth(req,['FACULTY','SUPER_ADMIN','COORDINATOR']);const workers=await getActiveWorkers(REDIS_URLS);return ok(res,workers);}
     if(p==='/api/code/session/start'&&req.method==='POST'){
       const user=auth(req); const b=await body(req);
       const sessionId=await startInteractiveDocker(b.language,b.code,b.stdin||'');
@@ -651,7 +767,21 @@ setInterval(()=>{try{
 setInterval(()=>{try{const rows=stmt("SELECT id FROM stations WHERE last_heartbeat < datetime('now','-30 seconds') AND status NOT IN ('MAINTENANCE','OFFLINE')").all();for(const r of rows)stmt("UPDATE stations SET status='OFFLINE' WHERE id=?").run(r.id);}catch{}},10000);
 const startServer = async () => {
   const selectedPort = process.env.CODEARENA_PORT ? Number(process.env.CODEARENA_PORT) : await resolvePort(PORT);
-  http.createServer(handle).listen(selectedPort, HOST, () => console.log(`CodeArena API listening on http://${HOST}:${selectedPort}`));
+  const server = http.createServer(handle);
+  initTelemetryWebSocket(server, {
+    db,
+    verifyToken,
+    getAllStations: () => stmt('SELECT id,station_number,ip_address,row_name,os,cpu_cores,ram_gb,gpu_model,sandbox_runtime,status,cpu_usage_pct,ram_usage_pct,student_usn,student_name,subject_code,language,current_problem_title,session_minutes,active_minutes,idle_minutes,total_submissions,accepted_submissions,last_heartbeat,incident_notes,hardware_json FROM stations ORDER BY station_number').all(),
+    updateHeartbeat: async (stationId, b) => {
+      stmt('UPDATE stations SET status=?,ip_address=?,cpu_usage_pct=?,ram_usage_pct=?,student_usn=?,student_name=?,subject_code=?,language=?,current_problem_title=?,session_minutes=?,active_minutes=?,idle_minutes=?,total_submissions=?,accepted_submissions=?,last_heartbeat=?,hardware_json=? WHERE id=?').run(b.status||'OPERATIONAL',b.ipAddress||'',b.cpuUsagePct||0,b.ramUsagePct||0,b.studentUsn||null,b.studentName||null,b.subjectCode||null,b.language||null,b.currentProblemTitle||null,b.sessionMinutes||0,b.activeMinutes||0,b.idleMinutes||0,b.totalSubmissions||0,b.acceptedSubmissions||0,now(),JSON.stringify(b.hardware||{}),stationId);
+      return stmt('SELECT * FROM stations WHERE id=?').get(stationId);
+    },
+    ackCommand: async (stationId, commandId, status, result) => {
+      stmt('UPDATE station_commands SET status=?,acknowledged_at=?,result=? WHERE id=? AND station_id=?').run(status==='SUCCESS'?'COMPLETED':'FAILED',now(),result||'',commandId,stationId);
+      if(status==='SUCCESS') stmt('UPDATE stations SET status=? WHERE id=?').run('OPERATIONAL',stationId);
+    }
+  });
+  server.listen(selectedPort, HOST, () => console.log(`CodeArena API listening on http://${HOST}:${selectedPort} with real-time WebSocket telemetry`));
 };
 
 void startServer();
